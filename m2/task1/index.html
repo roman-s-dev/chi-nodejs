@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File uploading</title>
+</head>
+<body>
+  <h1>Hello!</h1>
+  <input id="file" type="file" />
+  <script>
+    const input = document.querySelector('#file');
+    input.addEventListener('input', async () => {
+      const file = input.files[0]
+      if(!file) return;
+      console.log(file)
+      const response = await fetch('http://localhost:3000/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Filename': file.name
+        },
+        body: file
+      })
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob)
+      const img = document.createElement('img');
+      img.src = url;
+      document.body.appendChild(img);
+      console.log('GOT RESPONSE!', response, blob, url)
+    })
+  </script>
+</body>
+</html>
