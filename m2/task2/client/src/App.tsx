@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import { io } from "socket.io-client";
-import type { Message, Room, RoomDetails, User } from "./models";
+import type { Message, Room, TextMessage, StatusMessage, User } from "./models";
+import { debounce } from "lodash";
 
 const socket = io("http://localhost:4000", {
   transports: ["websocket"],
@@ -13,8 +14,14 @@ const App: React.FC = () => {
   const [rooms, setRooms] = useState<Room[]>([]);
   const joinedRoom = useRef(false);
 
-  const [currentRoom, setCurrentRoom] = useState<RoomDetails | null>(null);
+  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [usersTypingMap, setUsersTypingMap] = useState<
+    Record<string, { user: User; count: number }>
+  >({});
+  const usersTyping = Object.entries(usersTypingMap)
+    .filter(([, obj]) => obj.count > 0)
+    .map(([, { user }]) => user);
 
   useEffect(() => {
     const handleRooms = (roomsFromServer: Room[]) => {
@@ -42,9 +49,56 @@ const App: React.FC = () => {
     socket.on("message", (message) => {
       setMessages((prevMessages) => [...prevMessages, message]);
     });
+
+    socket.on("user joined", (message: StatusMessage) => {
+      setMessages((prevMessages) => [...prevMessages, message]);
+    });
+
+    socket.on("user left", (message: StatusMessage) => {
+      setMessages((prevMessages) => [...prevMessages, message]);
+    });
+
+    socket.on("user typing", (user: User) => {
+      console.log("User typing:", user);
+      setUsersTypingMap((prevMap) => {
+        const newMap = { ...prevMap };
+        if (!newMap[user.id])
+          newMap[user.id] = {
+            user: user,
+            count: 0,
+          };
+        newMap[user.id].count++;
+        return newMap;
+      });
+      setTimeout(() => {
+        setUsersTypingMap((prevMap) => {
+          const newMap = { ...prevMap };
+          if (newMap[user.id]) newMap[user.id].count--;
+          return newMap;
+        });
+      }, 2000);
+    });
   }, []);
 
-  const sendMessage = (content: string) => socket.emit("post message", content);
+  const sendMessage = (content: string) => {
+    socket.emit("post message", content);
+    setMessages((messages) => [
+      ...messages,
+      {
+        type: "TEXT",
+        id: Math.random().toString(),
+        user: user!,
+        roomId: currentRoom!.id,
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  const changeRoom = (roomId: string) => {
+    socket.emit("join room", roomId);
+    setMessages([]);
+  };
 
   return (
     <div className="App">
@@ -56,19 +110,30 @@ const App: React.FC = () => {
         <RoomPanel
           currentRoom={currentRoom}
           rooms={rooms}
-          onRoomChange={(roomId) => socket.emit("join room", roomId)}
+          onRoomChange={changeRoom}
         />
         <section className="messages">
           <div className="message-list">
-            {messages.map((message) => (
-              <Message
-                key={message.id}
-                message={message}
-                isMy={user?.id === message.user.id}
-              />
-            ))}
+            {messages.map((message) =>
+              message.type === "STATUS" ? (
+                <StatusMessage
+                  key={message.id}
+                  message={message as StatusMessage}
+                />
+              ) : (
+                <TextMessage
+                  key={message.id}
+                  message={message as TextMessage}
+                  isMy={user?.id === (message as TextMessage).user.id}
+                />
+              )
+            )}
           </div>
-          <MessageField onMessage={sendMessage} />
+          <MessageField
+            usersTyping={usersTyping}
+            onMessage={sendMessage}
+            onTyping={() => socket.emit("typing")}
+          />
         </section>
       </main>
     </div>
@@ -109,7 +174,7 @@ const UserName: React.FC<{ user: User }> = ({ user }) => {
 };
 
 const RoomPanel: React.FC<{
-  currentRoom: RoomDetails | null;
+  currentRoom: Room | null;
   rooms: Room[];
   onRoomChange: (roomId: string) => void;
 }> = ({ currentRoom, rooms, onRoomChange }) => {
@@ -124,7 +189,7 @@ const RoomPanel: React.FC<{
             }`}
             onClick={() => onRoomChange(room.id)}
           >
-            {room.name} ({room.members})
+            {room.name} ({room.members.length})
           </button>
         ))}
       </div>
@@ -133,14 +198,16 @@ const RoomPanel: React.FC<{
       <div className="users">
         <div>Users in this room: </div>
         {currentRoom?.members.map((user) => (
-          <div style={{ color: user.color }}>{user.name}</div>
+          <div key={user.id} style={{ color: user.color }}>
+            {user.name}
+          </div>
         ))}
       </div>
     </section>
   );
 };
 
-const Message: React.FC<{ message: Message; isMy: boolean }> = ({
+const TextMessage: React.FC<{ message: TextMessage; isMy: boolean }> = ({
   message,
   isMy,
 }) => {
@@ -170,9 +237,29 @@ const Message: React.FC<{ message: Message; isMy: boolean }> = ({
   );
 };
 
+const StatusMessage: React.FC<{ message: StatusMessage }> = ({ message }) => {
+  return (
+    <div className="Message Message--status">
+      <div className="Message__header">
+        <div
+          className="Message__header__name"
+          style={{ color: message.user.color }}
+        >
+          {message.user.name}
+        </div>
+      </div>
+      <div className="Message__body">
+        {message.action === "join" ? "joined the room" : "left the room"}
+      </div>
+    </div>
+  );
+};
+
 const MessageField: React.FC<{
+  usersTyping: User[];
   onMessage: (value: string) => void;
-}> = ({ onMessage }) => {
+  onTyping: () => void;
+}> = ({ usersTyping, onMessage, onTyping }) => {
   const [value, setValue] = useState("");
 
   const sendMessage = () => {
@@ -180,6 +267,15 @@ const MessageField: React.FC<{
       onMessage(value);
       setValue("");
     }
+  };
+
+  const handleChange = (ev: React.ChangeEvent<HTMLInputElement>) => {
+    setValue(ev.target.value);
+    console.log("User typing not debounced:", ev.target.value);
+    debounce(() => {
+      console.log("User typing:", ev.target.value);
+      onTyping();
+    }, 500)();
   };
 
   useEffect(() => {
@@ -192,13 +288,25 @@ const MessageField: React.FC<{
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [value]);
+  }, [sendMessage, value]);
 
   return (
     <div className="input">
+      <div className="typing-indicator-container">
+        {usersTyping.length > 0 && (
+          <div className="typing-indicator">
+            {usersTyping.map((user) => (
+              <span key={user.id} style={{ color: user.color }}>
+                {user.name}
+              </span>
+            ))}{" "}
+            is typing...
+          </div>
+        )}
+      </div>
       <input
         value={value}
-        onChange={(ev) => setValue(ev.target.value)}
+        onChange={handleChange}
         placeholder="Type your message here..."
       />
       <button className="send" onClick={() => sendMessage()}>

@@ -104,6 +104,15 @@ main .input button.send {
   background-color: #1c3a4d;
   color: #fff;
 }
+.Message--status {
+  background-color: #0009;
+  color: #fff;
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+}
 .Message__header {
   display: flex;
   justify-content: space-between;
@@ -113,4 +122,13 @@ main .input button.send {
   color: #aaa;
   font-size: 12px;
   text-align: right;
+}
+
+
+.input {
+  position: relative;
+}
+.input .typing-indicator-container {
+  position: absolute;
+  top: -20px;
 }
